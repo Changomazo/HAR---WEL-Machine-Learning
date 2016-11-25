@@ -1,0 +1,168 @@
+---
+title: "Human Activity Recognition: Weight Lifting Exercise Prediciton"
+output: 
+  html_document: 
+    keep_md: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, cache = TRUE, message=FALSE, warning=FALSE)
+```
+
+## Introduction
+Human Activity Recognition - HAR - has emerged as a key research area in the last years and is gaining increasing attention by the pervasive computing research community (For further information please read [here](http://groupware.les.inf.puc-rio.br/har )). Based on the data obtained from [Velloso and collaborators, 2013](http://groupware.les.inf.puc-rio.br/work.jsf?p1=11201), where six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E), **we will try to build a machine learning algorithm** to predict the manner in which these six individuals did the exercises.  
+Since the data set provided [here](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv) for the trainning data and [here](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv) for the test data, are quite messy we will be doing some "cleaning" to allow us to perform exploratory analysis and apply different algorithms such as *rpart*, *random fores*, *Linear Discriminant Analysis* and combinations to get the one with the highest accuracy which will allow us to apply this algorithm to the test data set.  
+```{r loaddata, cache=TRUE, results='hide'}
+fileURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv" #traininbg set
+fileURL2 <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv" #test set
+
+if(!file.exists("./pml-training.csv")) {
+  download.file(fileURL, destfile = "pml-training.csv")
+}
+
+if(!file.exists("./pml-testing.csv")) {
+  download.file(fileURL2, destfile = "./pml-testing.csv")
+}
+
+# Loading data into R
+# Since the original data sets have many fields which are blank or have errors, we used the na.strings argument in read.csv to make all of them consistent. 
+train <- read.csv("pml-training.csv", na.strings = c("NA", "#DIV/0", ""))
+test <- read.csv("pml-testing.csv", na.strings = c("NA", "#DIV/0", ""))
+```
+
+
+## Data cleaning and exploratory analysis
+1. Both datasets downloaded and loaded in R contain 160 variables! most of them are filled with NA values, DIV/o or nothing, that is why we added the argument *na.strings* in our *read.csv* function. The first step will be to remove those NA values in our data sets:  
+```{r tidydata, echo=TRUE}
+train <- train[, colSums(is.na(train)) == 0]
+test <- test[, colSums(is.na(test)) == 0]
+```
+2. The next step would be to gather all the meaningful variables measured in the [Weight Lifting Exercises analysis](http://groupware.les.inf.puc-rio.br/har#weight_lifting_exercises), which includes arm, belt, forearm, and dumbbell sensors measurements (we will also include our outcome the variable *classe*).  
+```{r pickingvar, echo=TRUE}
+train <- subset(train, select = c(grep("arm", colnames(train)), grep("belt", colnames(train)), grep("classe", colnames(train)), grep("dumbbell", colnames(train)), grep("forearm", colnames(train))))
+test <- subset(test, select = c(grep("arm", colnames(test)), grep("belt", colnames(test)), grep("classe", colnames(test)), grep("dumbbel", colnames(test)), grep("forearm", colnames(test))))
+
+```
+Once these steps are done, we are presented with a *train* and *test* databases of 66 variables, we will conduct further exploratory analysis to discard more varibels (if possible) that will not help us to buil up our algorithm. 
+
+3. We will plot some of the variables to see if there is some pattern that allows us to pick important predictors for the outcome *classe*. Here we present some of the plots (see code in appendix section 2) made to see such trends (if present):  
+
+```{r plots, fig.height=3, fig.width=6}
+library(ggplot2)
+library(gridExtra)
+g1 <- qplot(data = train,  x = roll_arm, y = roll_forearm, color = classe, alpha = I(1/10))
+g2 <- qplot(data = train, x = pitch_belt, y = pitch_dumbbell, color = classe, alpha = I(1/10))
+g3 <- qplot(data = train, x = gyros_belt_y, y = gyros_arm_y, color = classe, alpha = I(1/10))
+g4 <- qplot(data = train, x = accel_dumbbell_x, y = accel_forearm_x, color = classe, alpha = I(1/10))
+grid.arrange(g1, g2, g3, g4, ncol = 2, nrow = 2)
+```
+
+We failed to see any clear pattern between variables and the outcome *classe*. To further analyse these results, we performed a *near Zero variable* to see if any of the variables left can be excluded as predictors.  
+```{r loadlib, results='hide'}
+library(caret)
+which(colnames(train) == "classe") #we need to know our outcome to remove it from the following analyses
+```
+
+```{r nearZ, echo=TRUE}
+ZeroVar <- nearZeroVar(train[, -40], saveMetrics = TRUE)
+```
+If we analyse which variables have a near Zero variable value we fail to identify any of the 65 variables as non-important variables for the prediction analysis (full table in appendix section 3):  
+```{r whichzero, echo=TRUE}
+which(ZeroVar$nzv == FALSE)
+```
+
+**Thus all 65 variables will be used as predictors in our analysis.**
+
+## Building the machine learning algorithm
+To predict our outcome *class* we will be using 65 different predictors, and we will apply prediction algorithm based in tree and linear discrimination analysis. First we will split our *train* dataset in order to build the model and test the prediction models.
+```{r splitdata, echo=TRUE}
+# Spliting the data
+inTrain <- createDataPartition(train$classe, p = 0.7, list = FALSE)
+training <- train[inTrain, ]
+testing <- train[-inTrain, ]
+```
+
+1. Linear Discrimination analysis. We will fit this model to our *training* data set, we will also use crossvalidation. We have set up the value to 10, since the accuracy of the model does not improve with values of 5 or 20 (it is actually a bit better as 10) and all of them give an **accuracy of 70%**.
+```{r ldamodel, echo=TRUE, results='hide'}
+modFit <- train(classe ~ ., data = training, method = "lda", trControl = trainControl(method = "cv", number = 10))
+pred <- predict(modFit, testing)
+```
+
+2. Prediction with trees. Here we will be using two different models the classification tree and the Random Forest. The random Forest method was addressed via the train() function and the randomForest() function. Since the train() function gave us a really high computation time we adopted the randomForest() method.
+```{r rpart, echo=TRUE, results='hide'}
+# Classification tree
+modFit2 <- train(classe ~ ., data = training, method = "rpart", trControl = trainControl(method = "cv", number = 10))
+pred2 <- predict(modFit2, testing)
+# Random Forest
+library(randomForest)
+modFit4 <- randomForest(classe ~ ., data = training, method = "class")
+pred4 <- predict(modFit4, testing, type = "class")
+```
+```{r rf, echo=TRUE, eval=FALSE}
+# Also tried rf method in train() function
+modFit3 <- train(classe ~ ., data = training, method = "rf", trControl = trainControl(method = "cv", number = 10))
+pred3 <- predict(modFit3, testing)
+```
+
+3. Since the accuracies in both *lda* and *rpart* methods were not high enough, we tried to combine both methods in order to get a better predictive algorithm.
+```{r combination, echo=TRUE}
+#Combination of predictions
+predDF <- data.frame(pred, pred2, classe = testing$classe)
+combmodFit <- train(classe ~ ., method = "gam", data = predDF)
+combPred <- predict(combmodFit, predDF)
+```
+
+Finally we compared all the predicition algorith and check which one gave us the highest accuracy to use in our final prediction of the Testing Data:
+
+```{r confMatrix, echo=TRUE}
+# Linear Discrimination Analysis
+confusionMatrix(pred, testing$classe)$table; confusionMatrix(pred, testing$classe)$overall
+# Classification tree
+confusionMatrix(pred2, testing$classe)$table; confusionMatrix(pred2, testing$classe)$overall
+# Combination of lda and rpart
+confusionMatrix(combPred, testing$classe)$table; confusionMatrix(combPred, testing$classe)$overall
+# Random Forest
+confusionMatrix(pred4, testing$classe)$table; confusionMatrix(pred4, testing$classe)$overall
+```
+
+The **Random Forest model yields a 99% accuracy** and it is overall our best prediction model. Thus we will be using this model to predict the testing data base:
+```{r finalprediction, echo=TRUE}
+predict(modFit4, test, type = "class")
+```
+
+## Appendix
+### Section 1. Downloading the data and loading in R
+```{r, echo=TRUE, eval=FALSE}
+fileURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv" #traininbg set
+fileURL2 <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv" #test set
+
+if(!file.exists("./pml-training.csv")) {
+  download.file(fileURL, destfile = "pml-training.csv")
+}
+
+if(!file.exists("./pml-testing.csv")) {
+  download.file(fileURL2, destfile = "./pml-testing.csv")
+}
+
+# Loading data into R
+# Since the original data sets have many fields which are blank or have errors, we used the na.strings argument in read.csv to make all of them consistent. 
+train <- read.csv("pml-training.csv", na.strings = c("NA", "#DIV/0", ""))
+test <- read.csv("pml-testing.csv", na.strings = c("NA", "#DIV/0", ""))
+```
+
+### Section 2. Exploratory plots
+```{r plotsexp, echo=TRUE, eval=FALSE}
+library(ggplot2)
+library(gridExtra)
+g1 <- qplot(data = train,  x = roll_arm, y = roll_forearm, color = classe, alpha = I(1/10))
+g2 <- qplot(data = train, x = pitch_belt, y = pitch_dumbbell, color = classe, alpha = I(1/10))
+g3 <- qplot(data = train, x = gyros_belt_y, y = gyros_arm_y, color = classe, alpha = I(1/10))
+g4 <- qplot(data = train, x = accel_dumbbell_x, y = accel_forearm_x, color = classe, alpha = I(1/10))
+grid.arrange(g1, g2, g3, g4, ncol = 2, nrow = 2)
+```
+
+### Section 3. Nera Zero Variable Table:
+```{r printZero}
+print(ZeroVar)
+```
+
